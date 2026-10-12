@@ -1,2 +1,4 @@
 skore-cli==0.4.1
 pytest
+lightgbm>=4.0
+xgboost>=2.0
