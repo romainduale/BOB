@@ -17,6 +17,18 @@ scratch/
 # the leaderboard, not git, is the record)
 submissions/
 
+# generated model artifacts and training caches (recreated by experiments)
+catboost_info/
+results/exp05/
+results/exp06/
+results/exp07/
+
+# superseded local experiment drafts; keep only the reproducible 05c -> 07 flow
+experiments/05_deep_longitudinal.py
+experiments/05b_axes2to5.py
+experiments/05d_final_submission.py
+experiments/06_winner.py
+
 # bytecode
 __pycache__/
 *.pyc
