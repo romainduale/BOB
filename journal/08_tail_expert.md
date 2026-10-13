@@ -78,3 +78,18 @@ Generated results are stored under `results/exp08/` and intentionally ignored
 by Git. The local candidate file is `submissions/08_tail_expert.csv`; it has
 11,013 rows, the exact sample-submission index, no duplicates, and no missing
 predictions. It was not submitted to Kaggle.
+
+## Skore OOF audit
+
+The exact primary OOF predictions were published as a five-fold
+CrossValidationReport:
+
+- Report key: `08_tail_expert_oof_cv5`
+- Report: https://skore.probabl.ai/bob/08-tail-expert/cross-validations/70406
+- Fold RMSE: 3.8995 / 3.9406 / 3.8655 / 3.8133 / 3.9511
+- Global OOF RMSE: 3.8943
+
+This is explicitly an OOF diagnostic report rather than a deployable Skore
+pipeline. Its Hub payload is limited to the 44,590 training targets and their
+OOF predictions. Patient identifiers, clinical covariates, test rows, and test
+predictions are not included.
