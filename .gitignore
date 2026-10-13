@@ -22,8 +22,9 @@ catboost_info/
 results/exp05/
 results/exp06/
 results/exp07/
+results/exp08/
 
-# superseded local experiment drafts; keep only the reproducible 05c -> 07 flow
+# superseded local experiment drafts; keep only the reproducible 05c -> 08 flow
 experiments/05_deep_longitudinal.py
 experiments/05b_axes2to5.py
 experiments/05d_final_submission.py
