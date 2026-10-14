@@ -1,0 +1,10 @@
+{
+  "report_key": "27_public_clean_emg_ensemble",
+  "report_type": "EstimatorReport",
+  "report_url": "https://skore.probabl.ai/bob/bobathon-esilv/estimators/80531",
+  "holdout": "primary GroupKFold fold 5, patient-disjoint",
+  "holdout_rmse": 2.7098228881977997,
+  "n_train": 35673,
+  "n_test": 8917,
+  "reference_commit": "a608a6f86a0f7886f46982bf19535fcfb8b99cd6"
+}
