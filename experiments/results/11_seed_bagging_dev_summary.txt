@@ -1,0 +1,22 @@
+
+====================================================================================
+EXP11 DEV AUDIT
+====================================================================================
+Paired folds                     : 5
+Bag wins                         : 4/5 (80.0%)
+Mean fold delta (bag - single)   : -0.0051
+Std fold delta                   : 0.0068
+
+Repeat 1 seed=112358: single=3.4675 | bag=3.4625 | delta=-0.0051
+
+Mean GLOBAL delta                : -0.0051
+VERDICT                          : DEV_FAIL__KEEP_SINGLE_EXP08
+
+Pre-registered DEV gate:
+  global delta <= -0.008 AND >= 3/5 folds won.
+  If it passes, do not modify model seeds or Exp08 before CONFIRM.
+
+Saved fold results   : C:\Users\romsc\bobathon-esilv\experiments\results\11_seed_bagging_dev_folds.csv
+Saved repeat results : C:\Users\romsc\bobathon-esilv\experiments\results\11_seed_bagging_dev_repeats.csv
+Total runtime        : 19.7 min
+====================================================================================

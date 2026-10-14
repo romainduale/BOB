@@ -1,0 +1,29 @@
+
+==============================================================================
+FINAL ROBUSTNESS AUDIT
+==============================================================================
+Paired folds                    : 15
+Exp08 wins                      : 15/15 (100.0%)
+Mean fold delta (08 - 05)       : -0.0530
+Median fold delta               : -0.0520
+Std of fold delta               : 0.0136
+
+Repeat-level GLOBAL deltas:
+  Repeat 1 seed=1729: 05=3.5067 | 08=3.4483 | delta=-0.0584
+  Repeat 2 seed=2718: 05=3.5019 | 08=3.4447 | delta=-0.0572
+  Repeat 3 seed=3141: 05=3.5073 | 08=3.4635 | delta=-0.0438
+
+Mean repeat GLOBAL delta        : -0.0531
+Best/worst repeat delta         : -0.0584 / -0.0438
+VERDICT                         : ROBUST_GAIN
+
+Decision rule fixed before looking at these results:
+  ROBUST_GAIN = Exp08 wins every repeat, >=80% paired folds,
+                and mean repeat global delta <= -0.025.
+  SMALL_OR_UNCERTAIN_GAIN = directionally better, but weaker stability.
+  OVERFIT_SUSPECT_OR_NO_GAIN = improvement does not survive new splits.
+
+Saved fold results   : C:\Users\romsc\bobathon-esilv\experiments\results\09_repeated_group_folds.csv
+Saved repeat results : C:\Users\romsc\bobathon-esilv\experiments\results\09_repeated_group_repeats.csv
+Total runtime        : 36.7 min
+==============================================================================

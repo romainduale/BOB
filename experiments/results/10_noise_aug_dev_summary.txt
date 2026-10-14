@@ -1,0 +1,22 @@
+
+==================================================================================
+EXP10 DEV AUDIT
+==================================================================================
+Paired folds                 : 5
+Exp10 wins                   : 2/5 (40.0%)
+Mean fold delta (10 - 08)    : +0.0033
+Std fold delta               : 0.0165
+
+Repeat 1 seed=424242: 08=3.4571 | 10=3.4606 | delta=+0.0035
+
+Mean GLOBAL delta            : +0.0035
+VERDICT                      : DEV_FAIL__STOP_EXP10
+
+Pre-registered DEV gate:
+  Continue only if global delta <= -0.015.
+  If it passes, DO NOT modify Exp10 before CONFIRM.
+
+Saved fold results   : C:\Users\romsc\bobathon-esilv\experiments\results\10_noise_aug_dev_folds.csv
+Saved repeat results : C:\Users\romsc\bobathon-esilv\experiments\results\10_noise_aug_dev_repeats.csv
+Total runtime        : 20.1 min
+==================================================================================

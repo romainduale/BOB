@@ -1,5 +1,5 @@
 # %% [markdown]
-# # Experiment 05 — Final blend, sklearn wrapper + Skore Hub report
+# # Experiment 08 — Shrunk availability experts + sqrt-space stabilizer
 #
 # Purpose:
 #   - wrap the final calibrated longitudinal ensemble in a sklearn-compatible estimator;
@@ -194,41 +194,48 @@ def smooth_traj(df: pd.DataFrame, pred: np.ndarray) -> np.ndarray:
     return out
 
 
-class FinalBlendRegressor(RegressorMixin, BaseEstimator):
-    """Final Bobathon model, fully sklearn-compatible.
+class ShrunkExpertRegressor(RegressorMixin, BaseEstimator):
+    """Regularized expert model for the Bobathon.
 
-    fit(X, y):
-        learns rater calibrations and the four base learners from X/y only.
+    Architecture
+    ------------
+    1) Learn the same train-only rater calibration and longitudinal features as Exp05.
+    2) Fit a global LGB-A and three LGB-A experts for the three observed
+       availability regimes: both / off-only / on-only.
+    3) Smooth global and routed-expert predictions per patient, then shrink the
+       expert correction toward the global prediction (alpha=0.75).
+    4) Blend 90% of this shrunk expert predictor with 10% of the independent
+       sqrt-space LGB-B predictor.
 
-    predict(X):
-        builds patient-level longitudinal features from X only, predicts with the
-        fitted learners, smooths each learner's trajectory per patient, blends,
-        clips at zero, and restores the original row order.
+    The shrinkage and simple 90/10 blend are deliberately low-dimensional.
+    They were selected because they were stable in patient-disjoint OOF tests,
+    while stronger tree regularization and residual meta-models degraded RMSE.
     """
 
     def __init__(
         self,
         lgb_a_rounds=1200,
         lgb_b_rounds=800,
-        lgb_a_weight=0.413,
-        lgb_b_weight=0.383,
-        hgb_weight=0.089,
-        hgb_hc_weight=0.116,
-        num_threads=1,
+        expert_alpha=0.75,
+        main_weight=0.90,
+        sqrt_weight=0.10,
+        min_expert_rows=200,
+        num_threads=4,
         random_state=1,
     ):
         self.lgb_a_rounds = lgb_a_rounds
         self.lgb_b_rounds = lgb_b_rounds
-        self.lgb_a_weight = lgb_a_weight
-        self.lgb_b_weight = lgb_b_weight
-        self.hgb_weight = hgb_weight
-        self.hgb_hc_weight = hgb_hc_weight
+        self.expert_alpha = expert_alpha
+        self.main_weight = main_weight
+        self.sqrt_weight = sqrt_weight
+        self.min_expert_rows = min_expert_rows
         self.num_threads = num_threads
         self.random_state = random_state
 
-    def _check_X(self, X):
+    @staticmethod
+    def _check_X(X):
         if not isinstance(X, pd.DataFrame):
-            raise TypeError("FinalBlendRegressor requires X as a pandas DataFrame.")
+            raise TypeError("ShrunkExpertRegressor requires X as a pandas DataFrame.")
         required = {
             "patient_id", "cohort", "sexM", "gene", "age_at_diagnosis", "age",
             "ledd", "time_since_intake_on", "time_since_intake_off",
@@ -238,25 +245,19 @@ class FinalBlendRegressor(RegressorMixin, BaseEstimator):
         if missing:
             raise ValueError(f"Missing required columns: {sorted(missing)}")
 
-    def fit(self, X, y):
-        self._check_X(X)
-        Xs = sort_visits(X.copy())
-        ys = pd.Series(np.asarray(y), index=X.index).loc[Xs.index].to_numpy(dtype=float)
+    @staticmethod
+    def _availability_regime(df):
+        """0=both, 1=off-only, 2=on-only, 3=neither (global fallback)."""
+        on = df["on"].notna().to_numpy()
+        off = df["off"].notna().to_numpy()
+        return np.select(
+            [on & off, (~on) & off, on & (~off)],
+            [0, 1, 2],
+            default=3,
+        ).astype(np.int8)
 
-        # Target-dependent calibration is fitted ONLY here, on the estimator's train set.
-        self.cal_ = rater_cal(Xs, ys)
-        self.calq_ = rater_cal(Xs, ys, tf=np.sqrt)
-
-        F = build(Xs, self.cal_)
-        Fq = build(Xs, self.cal_, self.calq_)
-        E = build_extra(Xs, self.cal_, "hetero")
-        Fhc = pd.concat([F, E], axis=1)
-
-        self.feature_columns_ = list(F.columns)
-        self.sqrt_feature_columns_ = list(Fq.columns)
-        self.hc_feature_columns_ = list(Fhc.columns)
-
-        lgb_a = dict(
+    def _lgb_a_params(self):
+        return dict(
             objective="regression",
             metric="rmse",
             learning_rate=0.03,
@@ -269,89 +270,136 @@ class FinalBlendRegressor(RegressorMixin, BaseEstimator):
             verbose=-1,
             num_threads=self.num_threads,
             seed=self.random_state,
+            feature_fraction_seed=self.random_state,
+            bagging_seed=self.random_state,
+            data_random_seed=self.random_state,
         )
-        lgb_b = {
-            **lgb_a,
+
+    def fit(self, X, y):
+        self._check_X(X)
+        Xs = sort_visits(X.copy())
+        ys = pd.Series(np.asarray(y), index=X.index).loc[Xs.index].to_numpy(dtype=float)
+
+        # All target-dependent quantities are learned from fit(X, y) only.
+        self.cal_ = rater_cal(Xs, ys)
+        self.calq_ = rater_cal(Xs, ys, tf=np.sqrt)
+
+        F = build(Xs, self.cal_)
+        Fq = build(Xs, self.cal_, self.calq_)
+        self.feature_columns_ = list(F.columns)
+        self.sqrt_feature_columns_ = list(Fq.columns)
+
+        params_a = self._lgb_a_params()
+        params_b = {
+            **params_a,
             "learning_rate": 0.06,
             "feature_fraction": 0.3,
         }
 
-        self.lgb_a_ = lgb.train(lgb_a, lgb.Dataset(F, ys), num_boost_round=self.lgb_a_rounds)
-        self.lgb_b_ = lgb.train(lgb_b, lgb.Dataset(Fq, ys), num_boost_round=self.lgb_b_rounds)
-
-        hgb_params = dict(
-            max_iter=300,
-            learning_rate=0.05,
-            max_depth=6,
-            min_samples_leaf=20,
-            random_state=0,
+        # Global anchor: deliberately kept, so the experts only provide a
+        # shrunk correction rather than replacing the population model.
+        self.global_lgb_ = lgb.train(
+            params_a,
+            lgb.Dataset(F, ys),
+            num_boost_round=self.lgb_a_rounds,
         )
-        gene_idx = F.columns.get_loc("gene")
-        self.hgb_ = HistGradientBoostingRegressor(
-            categorical_features=[gene_idx], **hgb_params
-        ).fit(F, ys)
-        self.hgb_hc_ = HistGradientBoostingRegressor(**hgb_params).fit(Fhc, ys)
+
+        # Independent sqrt-space learner gives a small amount of diversity.
+        self.sqrt_lgb_ = lgb.train(
+            params_b,
+            lgb.Dataset(Fq, ys),
+            num_boost_round=self.lgb_b_rounds,
+        )
+
+        # Availability experts.  A fallback to the global model is used if a
+        # regime is unexpectedly too small in a future fit.
+        regime = self._availability_regime(Xs)
+        self.expert_models_ = {}
+        self.expert_counts_ = {}
+        for r in (0, 1, 2):
+            idx = np.flatnonzero(regime == r)
+            self.expert_counts_[r] = int(len(idx))
+            if len(idx) >= self.min_expert_rows:
+                self.expert_models_[r] = lgb.train(
+                    params_a,
+                    lgb.Dataset(F.iloc[idx], ys[idx]),
+                    num_boost_round=self.lgb_a_rounds,
+                )
+            else:
+                self.expert_models_[r] = None
 
         self.n_features_in_ = X.shape[1]
         return self
 
     def predict(self, X):
         self._check_X(X)
-        if not hasattr(self, "cal_"):
+        if not hasattr(self, "global_lgb_"):
             raise RuntimeError("Estimator is not fitted.")
 
         original_index = X.index
         Xs = sort_visits(X.copy())
-
         F = build(Xs, self.cal_).reindex(columns=self.feature_columns_)
-        Fq = build(Xs, self.cal_, self.calq_).reindex(columns=self.sqrt_feature_columns_)
-        E = build_extra(Xs, self.cal_, "hetero")
-        Fhc = pd.concat([F, E], axis=1).reindex(columns=self.hc_feature_columns_)
+        Fq = build(Xs, self.cal_, self.calq_).reindex(
+            columns=self.sqrt_feature_columns_
+        )
 
-        pred = {
-            "lgb": self.lgb_a_.predict(F),
-            "lgbB_sqrt": self.lgb_b_.predict(Fq),
-            "hgb": self.hgb_.predict(F),
-            "hgb_hc": self.hgb_hc_.predict(Fhc),
-        }
+        # Global anchor.
+        p_global_raw = self.global_lgb_.predict(F)
 
-        weights = {
-            "lgb": self.lgb_a_weight,
-            "lgbB_sqrt": self.lgb_b_weight,
-            "hgb": self.hgb_weight,
-            "hgb_hc": self.hgb_hc_weight,
-        }
-        wsum = sum(weights.values())
-        blended_sorted = sum(
-            weights[k] * smooth_traj(Xs, pred[k]) for k in weights
+        # Routed experts.  Start at the global prediction so the unseen
+        # 'neither' regime and any missing expert have a safe fallback.
+        p_expert_raw = p_global_raw.copy()
+        regime = self._availability_regime(Xs)
+        for r in (0, 1, 2):
+            idx = np.flatnonzero(regime == r)
+            model = self.expert_models_.get(r)
+            if len(idx) and model is not None:
+                p_expert_raw[idx] = model.predict(F.iloc[idx])
+
+        # Smooth complete patient trajectories after routing.  This is crucial:
+        # visits from one patient can belong to different availability regimes.
+        p_global = smooth_traj(Xs, p_global_raw)
+        p_expert = smooth_traj(Xs, p_expert_raw)
+
+        # Regularize the specialized correction toward the global model.
+        p_main = p_global + self.expert_alpha * (p_expert - p_global)
+
+        # Small independent sqrt-space component for variance reduction.
+        p_sqrt = smooth_traj(Xs, self.sqrt_lgb_.predict(Fq))
+        wsum = self.main_weight + self.sqrt_weight
+        pred_sorted = (
+            self.main_weight * p_main + self.sqrt_weight * p_sqrt
         ) / wsum
-        blended_sorted = np.clip(blended_sorted, 0.0, None)
+        pred_sorted = np.clip(pred_sorted, 0.0, None)
 
-        # restore the exact original X order expected by Skore / caller
-        return pd.Series(blended_sorted, index=Xs.index).loc[original_index].to_numpy()
+        return (
+            pd.Series(pred_sorted, index=Xs.index)
+            .loc[original_index]
+            .to_numpy()
+        )
 
 
 # ──────────────────────────────────────────────────────────────────────────────
-# DATA + PATIENT-LEVEL SPLITS
+# DATA + PATIENT-GROUPED VALIDATION
 # ──────────────────────────────────────────────────────────────────────────────
 DATA_DIR = PROJECT_ROOT / "data"
 X_raw = pd.read_csv(DATA_DIR / "X_train.csv", index_col="Index")
 y = pd.read_csv(DATA_DIR / "y_train.csv", index_col="Index")["target"].to_numpy()
 groups = X_raw["patient_id"].to_numpy()
-
 folds = list(GroupKFold(n_splits=5).split(X_raw, y, groups=groups))
+
 report_fold = int(os.environ.get("REPORT_FOLD", "0"))
 if report_fold not in range(5):
     raise ValueError("REPORT_FOLD must be 0, 1, 2, 3, or 4")
 
-# Optional exact 5-fold CV with the same wrapper.
-# PowerShell: $env:RUN_FULL_CV="1"; python scripts/05_longitudinal_blend_skore.py
+# Optional exact 5-fold validation.  This is expensive because every fold fits
+# one global LGB-A, three experts, and one sqrt-space LGB-B.
 if os.environ.get("RUN_FULL_CV", "0") == "1":
-    print("Running full 5-fold patient-level CV ...", flush=True)
+    print("Running full 5-fold patient-level CV for Exp08 ...", flush=True)
     oof = np.full(len(y), np.nan)
     fold_rmses = []
     for i, (tr, va) in enumerate(folds, 1):
-        est = FinalBlendRegressor()
+        est = ShrunkExpertRegressor()
         est.fit(X_raw.iloc[tr], y[tr])
         p = est.predict(X_raw.iloc[va])
         oof[va] = p
@@ -361,13 +409,15 @@ if os.environ.get("RUN_FULL_CV", "0") == "1":
     global_rmse = float(np.sqrt(mean_squared_error(y, oof)))
     print(f"Fold RMSEs : {[round(v, 4) for v in fold_rmses]}")
     print(f"Global OOF RMSE : {global_rmse:.4f}")
+    print("Frozen Exp05 reference OOF RMSE: 3.5019")
+    print(f"Delta vs Exp05: {global_rmse - 3.5019:+.4f}")
 
 # ──────────────────────────────────────────────────────────────────────────────
-# SKORE ESTIMATOR REPORT ON ONE HONEST GROUPKFOLD HOLDOUT
+# SKORE REPORT ON ONE HONEST PATIENT-DISJOINT HOLDOUT
 # ──────────────────────────────────────────────────────────────────────────────
 tr, va = folds[report_fold]
 print(
-    f"Building Skore report on fold {report_fold}: "
+    f"Building Exp08 Skore report on fold {report_fold}: "
     f"train={len(tr)}, test={len(va)}, "
     f"train patients={X_raw.iloc[tr].patient_id.nunique()}, "
     f"test patients={X_raw.iloc[va].patient_id.nunique()}",
@@ -376,7 +426,7 @@ print(
 assert set(X_raw.iloc[tr].patient_id).isdisjoint(set(X_raw.iloc[va].patient_id))
 
 report = skore.EstimatorReport(
-    FinalBlendRegressor(),
+    ShrunkExpertRegressor(),
     X_train=X_raw.iloc[tr],
     y_train=y[tr],
     X_test=X_raw.iloc[va],
@@ -386,22 +436,40 @@ report = skore.EstimatorReport(
 # ──────────────────────────────────────────────────────────────────────────────
 # PUSH TO SKORE HUB
 # ──────────────────────────────────────────────────────────────────────────────
-
 load_skore_credentials()
-
 cfg = json.loads((PROJECT_ROOT / ".skore").read_text())
-
 login(mode="hub")
-
 project = Project(
     name="bobathon-esilv",
     mode="hub",
     workspace=cfg["workspace"],
 )
-
-report_key = "05_final_blend"
-
+report_key = "08_shrunk_expert"
 project.put(report_key, report)
-
 print(f"Uploaded report key: {report_key}")
 print("Skore Hub upload successful.")
+
+# ──────────────────────────────────────────────────────────────────────────────
+# FINAL FIT + KAGGLE SUBMISSION
+# ──────────────────────────────────────────────────────────────────────────────
+X_test = pd.read_csv(DATA_DIR / "X_test.csv", index_col="Index")
+print("Training Exp08 on ALL training data ...", flush=True)
+final_model = ShrunkExpertRegressor()
+final_model.fit(X_raw, y)
+print("Predicting X_test ...", flush=True)
+test_pred = final_model.predict(X_test)
+
+submission = pd.DataFrame({"target": test_pred}, index=X_test.index)
+submission.index.name = "Index"
+SUBMISSIONS_DIR = PROJECT_ROOT / "submissions"
+SUBMISSIONS_DIR.mkdir(exist_ok=True)
+submission_path = SUBMISSIONS_DIR / "08_shrunk_expert.csv"
+submission.to_csv(submission_path)
+
+print(f"Submission written to: {submission_path}")
+print(f"Rows: {len(submission)}")
+print(f"NaNs: {submission['target'].isna().sum()}")
+print(
+    "Prediction min/mean/max: "
+    f"{test_pred.min():.3f} / {test_pred.mean():.3f} / {test_pred.max():.3f}"
+)
