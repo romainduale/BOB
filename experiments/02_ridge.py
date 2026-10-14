@@ -29,6 +29,7 @@ os.environ["SKORE_HUB_API_KEY"] = skore_cfg["api_key"]
 # ── Data ─────────────────────────────────────────────────────────────────────
 X_train = pd.read_csv(PROJECT_ROOT / "data" / "X_train.csv", index_col="Index")
 y_train = pd.read_csv(PROJECT_ROOT / "data" / "y_train.csv", index_col="Index")
+X_test = pd.read_csv(PROJECT_ROOT / "data" / "X_test.csv", index_col="Index")
 
 NUMERIC_FEATURES = [
     "sexM",
@@ -59,3 +60,13 @@ skore.login()
 project = skore.Project("02-ridge", mode="hub", workspace="bob")
 project.put("02_ridge_holdout", report)
 print("Pushed: 02_ridge_holdout")
+
+# ── Kaggle submission ─────────────────────────────────────────────────────────
+from sklearn.base import clone
+final = clone(ridge_pipe).fit(X, y)
+submission = pd.DataFrame({"target": final.predict(X_test[NUMERIC_FEATURES])}, index=X_test.index)
+submission.index.name = "Index"
+submissions_dir = PROJECT_ROOT / "submissions"
+submissions_dir.mkdir(exist_ok=True)
+submission.to_csv(submissions_dir / "02_ridge.csv")
+print(f"Submission written: submissions/02_ridge.csv  ({len(submission)} rows)")
